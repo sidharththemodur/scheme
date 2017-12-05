@@ -59,7 +59,8 @@ def scheme_apply(procedure, args, env):
     if isinstance(procedure, PrimitiveProcedure):
         return apply_primitive(procedure, args, env)
     elif isinstance(procedure, LambdaProcedure):
-        "*** YOUR CODE HERE ***"
+        subframe = procedure.env.make_call_frame(procedure.formals, args)
+        return scheme_eval(procedure.body, subframe)
     elif isinstance(procedure, MuProcedure):
         "*** YOUR CODE HERE ***"
     else:
@@ -74,7 +75,14 @@ def apply_primitive(procedure, args, env):
     >>> apply_primitive(plus, twos, env)
     4
     """
-    "*** YOUR CODE HERE ***"
+    try:
+        argslist = list(args)
+        if procedure.use_env:
+            argslist.append(env)
+        
+        return procedure.fn(*argslist)
+    except TypeError as error:
+        raise SchemeError(error)
 
 ################
 # Environments #
@@ -97,7 +105,14 @@ class Frame:
 
     def lookup(self, symbol):
         """Return the value bound to SYMBOL.  Errors if SYMBOL is not found."""
-        "*** YOUR CODE HERE ***"
+        currframe = self
+        while currframe is not None:
+            value = currframe.bindings.get(symbol)
+            if value is not None:
+                return value
+            
+            currframe = currframe.parent
+        
         raise SchemeError("unknown identifier: {0}".format(str(symbol)))
 
 
@@ -120,7 +135,12 @@ class Frame:
         <{a: 1, b: 2, c: 3} -> <Global Frame>>
         """
         frame = Frame(self)
-        "*** YOUR CODE HERE ***"
+        numformals = len(formals)
+        numvals = len(vals)
+        if numformals != numvals:
+            raise SchemeError("number of formals must match number of values")
+            
+        frame.bindings = dict(zip(formals, vals))
         return frame
 
     def define(self, sym, val):
@@ -184,7 +204,8 @@ def do_lambda_form(vals, env):
     check_form(vals, 2)
     formals = vals[0]
     check_formals(formals)
-    "*** YOUR CODE HERE ***"
+    body = Pair("begin", vals.second)
+    return LambdaProcedure(vals[0], body, env)
 
 def do_mu_form(vals):
     """Evaluate a mu form with parameters VALS."""
@@ -199,16 +220,22 @@ def do_define_form(vals, env):
     target = vals[0]
     if scheme_symbolp(target):
         check_form(vals, 2, 2)
-        "*** YOUR CODE HERE ***"
+        value = scheme_eval(vals[1], env)
+        env.define(target, value)
+        return target
+
     elif isinstance(target, Pair):
-        "*** YOUR CODE HERE ***"
+        lambdaExp = Pair(target.second, vals.second)
+        lambdaproc = do_lambda_form(lambdaExp, env)
+        env.define(target.first, lambdaproc)
+        return target.first
     else:
         raise SchemeError("bad argument to define")
 
 def do_quote_form(vals):
     """Evaluate a quote form with parameters VALS."""
     check_form(vals, 1, 1)
-    "*** YOUR CODE HERE ***"
+    return vals[0]
 
 
 def do_let_form(vals, env):
@@ -218,10 +245,12 @@ def do_let_form(vals, env):
     exprs = vals.second
     if not scheme_listp(bindings):
         raise SchemeError("bad bindings list in let form")
-
     # Add a frame containing bindings
     names, values = nil, nil
-    "*** YOUR CODE HERE ***"
+    for binding in bindings:
+        check_form(binding, 2)
+        names= Pair(binding[0], names)
+        values = Pair(scheme_eval(binding[1], env),values)
     new_env = env.make_call_frame(names, values)
 
     # Evaluate all but the last expression after bindings, and return the last
@@ -238,11 +267,24 @@ def do_let_form(vals, env):
 def do_if_form(vals, env):
     """Evaluate if form with parameters VALS in environment ENV."""
     check_form(vals, 2, 3)
-    "*** YOUR CODE HERE ***"
+    condition = scheme_eval(vals[0], env)
+    if scheme_true(condition):
+        return vals[1]
+    elif len(vals) == 3:
+        return vals[2]
+    return okay
 
 def do_and_form(vals, env):
     """Evaluate short-circuited and with parameters VALS in environment ENV."""
-    "*** YOUR CODE HERE ***"
+    numvals = len(vals)
+    if numvals == 0:
+        return True
+    for i in range(numvals):
+        result = scheme_eval(vals[i], env)
+        if scheme_false(result):
+            return False
+    
+    return result
 
 def quote(value):
     """Return a Scheme expression quoting the Scheme VALUE.
@@ -257,7 +299,16 @@ def quote(value):
 
 def do_or_form(vals, env):
     """Evaluate short-circuited or with parameters VALS in environment ENV."""
-    "*** YOUR CODE HERE ***"
+    numvals = len(vals)
+    if numvals == 0:
+        return False
+    
+    for i in range(numvals - 1):
+        result = scheme_eval(vals[i], env)
+        if scheme_true(result):
+            return quote(result)
+
+    return vals[numvals - 1]
 
 def do_cond_form(vals, env):
     """Evaluate cond form with parameters VALS in environment ENV."""
@@ -273,13 +324,20 @@ def do_cond_form(vals, env):
         else:
             test = scheme_eval(clause.first, env)
         if scheme_true(test):
-            "*** YOUR CODE HERE ***"
+            if clause.second is nil:
+                return test
+            return do_begin_form(clause.second, env)
     return okay
 
 def do_begin_form(vals, env):
     """Evaluate begin form with parameters VALS in environment ENV."""
     check_form(vals, 1)
-    "*** YOUR CODE HERE ***"
+    length = len(vals)
+    if vals is nil:
+        return okay
+    for i in range(length - 1):
+        result = scheme_eval(vals[i], env)
+    return vals[length - 1]
 
 LOGIC_FORMS = {
         "and": do_and_form,
@@ -310,8 +368,21 @@ def check_formals(formals):
 
     >>> check_formals(read_line("(a b c)"))
     """
-    "*** YOUR CODE HERE ***"
-
+    numformals = len(formals)
+    if formals == nil:
+        return
+    if formals.first is not Pair and formals[numformals - 1] is nil:
+        raise SchemeError("not a valid scheme list of formals")
+    
+    symbols = set()
+    for symbol in formals:
+        if not scheme_symbolp(symbol):
+            raise SchemeError("formals must be symbols")
+        elif symbol in symbols:
+            raise SchemeError("Each formal must have unique identifier")
+        else:
+            symbols.add(symbol)
+    
 ##################
 # Tail Recursion #
 ##################
